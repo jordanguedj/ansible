@@ -46,6 +46,9 @@ options:
   project_id:
     description:
       - Your GCP project ID.
+  organization_id:
+    description:
+      - Your GCP organization ID.
   permissions:
     description:
       - IAM permissions to configure with the IAM resource.
@@ -80,11 +83,12 @@ USER_AGENT_VERSION = '0.0.1'
 def _get_req_resource(client, resource_type):
     if resource_type == 'projects':
         return client.projects()
+    if resource_type == 'organizations':
+        return client.organizations()
 
 
-def create_role(client, project_id, title, description, permissions):
+def create_role(client, resource_type, resource_id, title, description, permissions):
     try:
-        resource_type = 'projects'
         projects = _get_req_resource(client, resource_type)
         body = {
             'roleId': ''.join(e for e in title if e.isalnum()),
@@ -95,7 +99,7 @@ def create_role(client, project_id, title, description, permissions):
             }
         }
         args = {'parent': '{}/{}'.format(
-            resource_type, project_id), 'body': body}
+            resource_type, resource_id), 'body': body}
         req = projects.roles().create(**args)
         return_data = GCPUtils.execute_api_client_req(req, raise_404=False)
         return (True, return_data)
@@ -110,10 +114,12 @@ def main():
             title=dict(type='str'),
             description=dict(type='str'),
             project_id=dict(type='str'),
+            organization_id=dict(type='str'),
             permissions=dict(type='list'),
             state=dict(type='state'),
         ),
         mutually_exclusive=[
+            ['project_id', 'organization_id']
         ],
         required_one_of=[
             ['iam_type', 'title', 'project_id']
@@ -132,6 +138,7 @@ def main():
     params['title'] = module.params.get('title')
     params['description'] = module.params.get('description')
     params['project_id'] = module.params.get('project_id')
+    params['organization_id'] = module.params.get('organization_id')
     params['permissions'] = module.params.get('permissions')
     params['state'] = module.params.get('state')
     params['changed'] = False
@@ -141,8 +148,14 @@ def main():
         client, conn_params = get_google_api_client(module, 'iam',
             user_agent_product=USER_AGENT_PRODUCT,
             user_agent_version=USER_AGENT_VERSION)
-        changed, json_output = create_role(client, params['project_id'],
-            params['title'], params['description'], params['permissions'])
+        if params['project_id']:
+            changed, json_output = create_role(client, 'projects',
+                params['project_id'], params['title'],
+                params['description'], params['permissions'])
+        if params['organization_id']:
+            changed, json_output = create_role(client, 'organizations',
+                params['organization_id'], params['title'],
+                params['description'], params['permissions'])
     json_output['changed'] = changed
     module.exit_json(**json_output)
 
