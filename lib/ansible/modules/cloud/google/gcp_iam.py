@@ -106,6 +106,7 @@ def _validate_params(params):
     fields = [
         {'name': 'iam_type', 'type': str, 'required': True, 'values': ['role', 'service_account']},
         {'name': 'title', 'type': str},
+        {'name': 'name', 'type': str},
         {'name': 'description', 'type': str},
         {'name': 'project_id', 'type': str},
         {'name': 'organization_id', 'type': str},
@@ -113,13 +114,33 @@ def _validate_params(params):
     ]
     try:
         check_params(params, fields)
+        if params['iam_type'] == 'service_account' and 'organization_id' in params:
+            raise ValueError("You cannot create service accounts for an organization.")
+    except:
+        raise
+
+
+def create_service_account(client, project_id, name):
+    try:
+        resource_type = 'projects'
+        projects = _get_req_resource(client, resource_type)
+        body = {
+            "accountId": name.lower().replace(' ', '-'),
+            "serviceAccount": {
+                'displayName': name
+            }
+        }
+        args = {'name': '{}/{}'.format(resource_type, project_id), 'body': body}
+        req = projects.serviceAccounts().create(**args)
+        return_data = GCPUtils.execute_api_client_req(req, raise_404=False)
+        return (True, return_data)
     except:
         raise
 
 
 def create_role(client, resource_type, resource_id, title, description, permissions):
     try:
-        projects = _get_req_resource(client, resource_type)
+        resources = _get_req_resource(client, resource_type)
         body = {
             'roleId': ''.join(e for e in title if e.isalnum()),
             'role': {
@@ -130,7 +151,7 @@ def create_role(client, resource_type, resource_id, title, description, permissi
         }
         args = {'parent': '{}/{}'.format(
             resource_type, resource_id), 'body': body}
-        req = projects.roles().create(**args)
+        req = resources.roles().create(**args)
         return_data = GCPUtils.execute_api_client_req(req, raise_404=False)
         return (True, return_data)
     except:
@@ -142,6 +163,7 @@ def main():
         argument_spec=dict(
             iam_type=dict(type='str'),
             title=dict(type='str'),
+            name=dict(type='str'),
             description=dict(type='str'),
             project_id=dict(type='str'),
             organization_id=dict(type='str'),
@@ -163,15 +185,19 @@ def main():
         user_agent_version=USER_AGENT_VERSION)
 
     params = {}
-
     params['iam_type'] = module.params.get('iam_type')
-    params['title'] = module.params.get('title')
-    params['description'] = module.params.get('description')
+    if module.params.get('title'):
+        params['title'] = module.params.get('title')
+    if module.params.get('name'):
+        params['name'] = module.params.get('name')
+    if module.params.get('description'):
+        params['description'] = module.params.get('description')
     if module.params.get('project_id'):
         params['project_id'] = module.params.get('project_id')
     if module.params.get('organization_id'):
         params['organization_id'] = module.params.get('organization_id')
-    params['permissions'] = module.params.get('permissions')
+    if module.params.get('permissions'):
+        params['permissions'] = module.params.get('permissions')
     params['changed'] = False
     json_output = {}
 
@@ -180,18 +206,24 @@ def main():
     except Exception as e:
         module.fail_json(msg=e, changed=False)
 
-    if params['iam_type'] == 'role':
+    if params['iam_type'] == 'role' or params['iam_type'] == 'service_account':
         client, conn_params = get_google_api_client(module, 'iam',
             user_agent_product=USER_AGENT_PRODUCT,
             user_agent_version=USER_AGENT_VERSION)
-        if 'project_id' in params:
-            changed, json_output = create_role(client, 'projects',
-                params['project_id'], params['title'],
-                params['description'], params['permissions'])
-        if 'organization_id' in params:
-            changed, json_output = create_role(client, 'organizations',
-                params['organization_id'], params['title'],
-                params['description'], params['permissions'])
+        if params['iam_type'] == 'role':
+            if 'project_id' in params:
+                changed, json_output = create_role(client, 'projects',
+                    params['project_id'], params['title'],
+                    params['description'], params['permissions'])
+            if 'organization_id' in params:
+                changed, json_output = create_role(client, 'organizations',
+                    params['organization_id'], params['title'],
+                    params['description'], params['permissions'])
+        if params['iam_type'] == 'service_account':
+            if 'project_id' in params:
+                changed, json_output = create_service_account(
+                    client, params['project_id'], params['name'])
+
     json_output['changed'] = changed
     module.exit_json(**json_output)
 
