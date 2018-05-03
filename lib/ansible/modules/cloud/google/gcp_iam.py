@@ -43,6 +43,17 @@ options:
   description:
     description:
        - Description of IAM resource.
+  email:
+    description:
+       - Email of IAM resource.
+  key_type:
+    description:
+       - The type of service account key to generate. It will generate credentials files by default.
+    choices: ["credentials_file", "pkcs12_file"]
+  key_algorithm:
+    description:
+       - The key algorithm. It will generate 2048-bit RSA keys by default.
+    choices: ["rsa_1024", "rsa_2048"]
   project_id:
     description:
       - Your GCP project ID.
@@ -104,10 +115,16 @@ def _validate_params(params):
     :rtype: ``bool`` or `class:ValueError`
     """
     fields = [
-        {'name': 'iam_type', 'type': str, 'required': True, 'values': ['role', 'service_account']},
+        {'name': 'iam_type', 'type': str, 'required': True, 'values': [
+            'role', 'service_account', 'service_account_key']},
         {'name': 'title', 'type': str},
         {'name': 'name', 'type': str},
         {'name': 'description', 'type': str},
+        {'name': 'email', 'type': str},
+        {'name': 'key_type', 'type': str, 'values': [
+            'credentials_file', 'pkcs12_file']},
+        {'name': 'key_algorithm', 'type': str, 'values': [
+            'rsa_1024', 'rsa_2048']},
         {'name': 'project_id', 'type': str},
         {'name': 'organization_id', 'type': str},
         {'name': 'permissions', 'type': list},
@@ -116,6 +133,39 @@ def _validate_params(params):
         check_params(params, fields)
         if params['iam_type'] == 'service_account' and 'organization_id' in params:
             raise ValueError("You cannot create service accounts for an organization.")
+        if params['iam_type'] == 'service_account_key':
+            if 'organization_id' in params:
+                raise ValueError("You cannot create service account keys for an organization.")
+            if not 'email' in params:
+                raise ValueError("You cannot create service account keys without an email.")
+    except:
+        raise
+
+
+def create_service_account_key(client, project_id, name, key_type=None, key_algorithm=None):
+    try:
+        resource_type = 'projects'
+        key_types = {
+            'credentials_file': 'TYPE_GOOGLE_CREDENTIALS_FILE',
+            'pkcs12_file': 'TYPE_PKCS12_FILE',
+            'default': 'TYPE_GOOGLE_CREDENTIALS_FILE'
+        }
+        key_algorithms = {
+            'rsa_1024': 'KEY_ALG_RSA_1024',
+            'rsa_2048': 'KEY_ALG_RSA_2048',
+            'default': 'KEY_ALG_RSA_2048'
+        }
+        projects = _get_req_resource(client, resource_type)
+
+        body = {
+            "privateKeyType": key_types[key_type] if key_type else key_types['default'],
+            "keyAlgorithm": key_algorithms[key_algorithm] if key_algorithm else key_algorithms['default']
+        }
+        args = {'name': '{}/{}/serviceAccounts/{}'.format(
+            resource_type, project_id, name.lower().replace(' ', '-')), 'body': body}
+        req = projects.serviceAccounts().keys().create(**args)
+        return_data = GCPUtils.execute_api_client_req(req, raise_404=False)
+        return (True, return_data)
     except:
         raise
 
@@ -165,6 +215,9 @@ def main():
             title=dict(type='str'),
             name=dict(type='str'),
             description=dict(type='str'),
+            email=dict(type='str'),
+            key_type=dict(type='str'),
+            key_algorithm=dict(type='str'),
             project_id=dict(type='str'),
             organization_id=dict(type='str'),
             permissions=dict(type='list'),
@@ -192,6 +245,12 @@ def main():
         params['name'] = module.params.get('name')
     if module.params.get('description'):
         params['description'] = module.params.get('description')
+    if module.params.get('email'):
+        params['email'] = module.params.get('email')
+    if module.params.get('key_type'):
+        params['key_type'] = module.params.get('key_type')
+    if module.params.get('key_algorithm'):
+        params['key_algorithm'] = module.params.get('key_algorithm')
     if module.params.get('project_id'):
         params['project_id'] = module.params.get('project_id')
     if module.params.get('organization_id'):
@@ -206,7 +265,7 @@ def main():
     except Exception as e:
         module.fail_json(msg=e, changed=False)
 
-    if params['iam_type'] == 'role' or params['iam_type'] == 'service_account':
+    if params['iam_type'] in ['role', 'service_account', 'service_account_key']:
         client, conn_params = get_google_api_client(module, 'iam',
             user_agent_product=USER_AGENT_PRODUCT,
             user_agent_version=USER_AGENT_VERSION)
@@ -220,9 +279,14 @@ def main():
                     params['organization_id'], params['title'],
                     params['description'], params['permissions'])
         if params['iam_type'] == 'service_account':
-            if 'project_id' in params:
-                changed, json_output = create_service_account(
-                    client, params['project_id'], params['name'])
+            changed, json_output = create_service_account(
+                client, params['project_id'], params['name'])
+        if params['iam_type'] == 'service_account_key':
+            key_type = params['key_type'] if 'key_type' in params else None
+            key_algorithm = params['key_algorithm'] if 'key_algorithm' in params else None
+            changed, json_output = create_service_account_key(
+                client, params['project_id'], params['email'],
+                key_type, key_algorithm)
 
     json_output['changed'] = changed
     module.exit_json(**json_output)
