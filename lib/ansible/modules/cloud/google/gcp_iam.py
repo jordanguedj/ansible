@@ -73,7 +73,7 @@ RETURN = '''
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.gcp import get_google_api_client, GCPUtils
+from ansible.module_utils.gcp import check_params, get_google_api_client, GCPUtils
 
 
 USER_AGENT_PRODUCT = 'ansible-healthcheck'
@@ -85,6 +85,36 @@ def _get_req_resource(client, resource_type):
         return client.projects()
     if resource_type == 'organizations':
         return client.organizations()
+
+
+def _validate_params(params):
+    """
+    Validate url_map params.
+
+    This function calls _validate_host_rules_params to verify
+    the host_rules-specific parameters.
+
+    This function calls _validate_path_matchers_params to verify
+    the path_matchers-specific parameters.
+
+    :param params: Ansible dictionary containing configuration.
+    :type  params: ``dict``
+
+    :return: True or raises ValueError
+    :rtype: ``bool`` or `class:ValueError`
+    """
+    fields = [
+        {'name': 'iam_type', 'type': str, 'required': True, 'values': ['role', 'service_account']},
+        {'name': 'title', 'type': str},
+        {'name': 'description', 'type': str},
+        {'name': 'project_id', 'type': str},
+        {'name': 'organization_id', 'type': str},
+        {'name': 'permissions', 'type': list},
+    ]
+    try:
+        check_params(params, fields)
+    except:
+        raise
 
 
 def create_role(client, resource_type, resource_id, title, description, permissions):
@@ -116,13 +146,13 @@ def main():
             project_id=dict(type='str'),
             organization_id=dict(type='str'),
             permissions=dict(type='list'),
-            state=dict(type='state'),
         ),
         mutually_exclusive=[
             ['project_id', 'organization_id']
         ],
         required_one_of=[
-            ['iam_type', 'title', 'project_id']
+            ['iam_type'],
+            ['project_id', 'organization_id']
         ],
     )
 
@@ -137,22 +167,28 @@ def main():
     params['iam_type'] = module.params.get('iam_type')
     params['title'] = module.params.get('title')
     params['description'] = module.params.get('description')
-    params['project_id'] = module.params.get('project_id')
-    params['organization_id'] = module.params.get('organization_id')
+    if module.params.get('project_id'):
+        params['project_id'] = module.params.get('project_id')
+    if module.params.get('organization_id'):
+        params['organization_id'] = module.params.get('organization_id')
     params['permissions'] = module.params.get('permissions')
-    params['state'] = module.params.get('state')
     params['changed'] = False
     json_output = {}
+
+    try:
+        _validate_params(params)
+    except Exception as e:
+        module.fail_json(msg=e, changed=False)
 
     if params['iam_type'] == 'role':
         client, conn_params = get_google_api_client(module, 'iam',
             user_agent_product=USER_AGENT_PRODUCT,
             user_agent_version=USER_AGENT_VERSION)
-        if params['project_id']:
+        if 'project_id' in params:
             changed, json_output = create_role(client, 'projects',
                 params['project_id'], params['title'],
                 params['description'], params['permissions'])
-        if params['organization_id']:
+        if 'organization_id' in params:
             changed, json_output = create_role(client, 'organizations',
                 params['organization_id'], params['title'],
                 params['description'], params['permissions'])
