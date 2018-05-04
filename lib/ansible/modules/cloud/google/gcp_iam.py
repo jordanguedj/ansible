@@ -63,6 +63,12 @@ options:
   permissions:
     description:
       - IAM permissions to configure with the IAM resource.
+  role:
+    description:
+      - The role name to apply.
+  members:
+    description:
+      - The members to bind with the role.
   state:
     description: State of the IAM resource.
     required: true
@@ -99,24 +105,9 @@ def _get_req_resource(client, resource_type):
 
 
 def _validate_params(params):
-    """
-    Validate url_map params.
-
-    This function calls _validate_host_rules_params to verify
-    the host_rules-specific parameters.
-
-    This function calls _validate_path_matchers_params to verify
-    the path_matchers-specific parameters.
-
-    :param params: Ansible dictionary containing configuration.
-    :type  params: ``dict``
-
-    :return: True or raises ValueError
-    :rtype: ``bool`` or `class:ValueError`
-    """
     fields = [
         {'name': 'iam_type', 'type': str, 'required': True, 'values': [
-            'role', 'service_account', 'service_account_key']},
+            'role', 'service_account', 'service_account_key', 'policy']},
         {'name': 'title', 'type': str},
         {'name': 'name', 'type': str},
         {'name': 'description', 'type': str},
@@ -128,6 +119,8 @@ def _validate_params(params):
         {'name': 'project_id', 'type': str},
         {'name': 'organization_id', 'type': str},
         {'name': 'permissions', 'type': list},
+        {'name': 'role', 'type': str},
+        {'name': 'members', 'type': list},
     ]
     try:
         check_params(params, fields)
@@ -208,6 +201,26 @@ def create_role(client, resource_type, resource_id, title, description, permissi
         raise
 
 
+def update_policy(client, resource_type, resource_id, role, members):
+    try:
+        resources = _get_req_resource(client, resource_type)
+        args = {'resource': resource_id, 'body': {}}
+        req = resources.getIamPolicy(**args)
+        policy_data = GCPUtils.execute_api_client_req(req, raise_404=False)
+        body = {
+            "policy": policy_data
+        }
+        body['policy']['bindings'].append({
+            'members': members,
+            'role': 'roles/{}'.format(role)
+        })
+        req = resources.setIamPolicy(resource=resource_id, body=body)
+        return_data = GCPUtils.execute_api_client_req(req, raise_404=False)
+        return (True, return_data)
+    except:
+        raise
+
+
 def main():
     module = AnsibleModule(
         argument_spec=dict(
@@ -221,9 +234,12 @@ def main():
             project_id=dict(type='str'),
             organization_id=dict(type='str'),
             permissions=dict(type='list'),
+            role=dict(type='str'),
+            members=dict(type='list'),
         ),
         mutually_exclusive=[
-            ['project_id', 'organization_id']
+            ['project_id', 'organization_id'],
+            ['members', 'permissions']
         ],
         required_one_of=[
             ['iam_type'],
@@ -257,6 +273,10 @@ def main():
         params['organization_id'] = module.params.get('organization_id')
     if module.params.get('permissions'):
         params['permissions'] = module.params.get('permissions')
+    if module.params.get('role'):
+        params['role'] = module.params.get('role')
+    if module.params.get('members'):
+        params['members'] = module.params.get('members')
     params['changed'] = False
     json_output = {}
 
@@ -265,28 +285,35 @@ def main():
     except Exception as e:
         module.fail_json(msg=e, changed=False)
 
-    if params['iam_type'] in ['role', 'service_account', 'service_account_key']:
-        client, conn_params = get_google_api_client(module, 'iam',
-            user_agent_product=USER_AGENT_PRODUCT,
-            user_agent_version=USER_AGENT_VERSION)
-        if params['iam_type'] == 'role':
-            if 'project_id' in params:
-                changed, json_output = create_role(client, 'projects',
-                    params['project_id'], params['title'],
-                    params['description'], params['permissions'])
-            if 'organization_id' in params:
-                changed, json_output = create_role(client, 'organizations',
-                    params['organization_id'], params['title'],
-                    params['description'], params['permissions'])
-        if params['iam_type'] == 'service_account':
-            changed, json_output = create_service_account(
-                client, params['project_id'], params['name'])
-        if params['iam_type'] == 'service_account_key':
-            key_type = params['key_type'] if 'key_type' in params else None
-            key_algorithm = params['key_algorithm'] if 'key_algorithm' in params else None
-            changed, json_output = create_service_account_key(
-                client, params['project_id'], params['email'],
-                key_type, key_algorithm)
+    api = 'iam'
+    if params['iam_type'] == 'policy':
+        api = 'cloudresourcemanager'
+    client, conn_params = get_google_api_client(module, api,
+        user_agent_product=USER_AGENT_PRODUCT,
+        user_agent_version=USER_AGENT_VERSION)
+    if params['iam_type'] == 'role' or params['iam_type'] == 'policy':
+        if 'project_id' in params:
+            resource_type = 'projects'
+            resource_id = 'project_id'
+        if 'organization_id' in params:
+            resource_type = 'organizations'
+            resource_id = 'organization_id'
+        if 'permissions' in params:
+            changed, json_output = create_role(client, resource_type,
+                params[resource_id], params['title'],
+                params['description'], params['permissions'])
+        if params['iam_type'] == 'policy':
+            changed, json_output = update_policy(client, resource_type,
+                params[resource_id], params['role'], params['members'])
+    if params['iam_type'] == 'service_account':
+        changed, json_output = create_service_account(
+            client, params['project_id'], params['name'])
+    if params['iam_type'] == 'service_account_key':
+        key_type = params['key_type'] if 'key_type' in params else None
+        key_algorithm = params['key_algorithm'] if 'key_algorithm' in params else None
+        changed, json_output = create_service_account_key(
+            client, params['project_id'], params['email'],
+            key_type, key_algorithm)
 
     json_output['changed'] = changed
     module.exit_json(**json_output)
